@@ -28,18 +28,56 @@ function App() {
   const [follow, setFollow] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState(null);
-  const [panelTab, setPanelTab] = useState('overview'); // Активная вкладка описания
+  const [panelTab, setPanelTab] = useState('overview');
+  const [nasaSyncTime, setNasaSyncTime] = useState(null);
 
   useEffect(() => {
+    // 1. Загружаем каталог тел
     fetch(`${API}/objects`)
       .then((r) => r.json())
-      .then((data) => { setObjects(data); setLoading(false); })
+      .then((data) => {
+        setObjects(data);
+        setLoading(false);
+      })
       .catch((err) => {
         console.error("API Fetch Error:", err);
-        setErrorDetails("Ошибка загрузки API: " + err.message);
+        setErrorDetails("Ошибка API: " + err.message);
         setLoading(false);
       });
+
+    // 2. Запрашиваем живые координаты NASA JPL Horizons
+    fetch(`${API}/live-ephemeris`)
+      .then((r) => r.json())
+      .then((res) => {
+        if (res?.positions) {
+          appRef.current.livePositions = res.positions;
+          setNasaSyncTime(new Date(res.timestamp).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }));
+
+          // Синхронизируем положение планет
+          if (appRef.current.meshes) {
+            applyNasaLiveCoordinates(res.positions);
+          }
+        }
+      })
+      .catch((e) => console.warn("Не удалось подтянуть живые координаты NASA:", e));
   }, []);
+
+  function applyNasaLiveCoordinates(positions) {
+    const s = appRef.current;
+    if (!s.meshes) return;
+
+    Object.entries(positions).forEach(([planetId, vec]) => {
+      const mesh = s.meshes.get(planetId);
+      if (mesh) {
+        // Вычисляем реальный угол планеты на орбите прямо сейчас
+        const realAngle = Math.atan2(vec.z, vec.x);
+        mesh.userData.currentAngle = realAngle;
+        const r = mesh.userData.calculatedDistance || 15;
+        mesh.position.x = Math.cos(realAngle) * r;
+        mesh.position.z = Math.sin(realAngle) * r;
+      }
+    });
+  }
 
   useEffect(() => {
     const el = mountRef.current;
@@ -111,14 +149,17 @@ function App() {
       const solar = objects.filter((o) => objectScale(o) === 'solar');
       const planets = {};
 
-      // 1. Солнце и планеты
+      // 1. Планеты
       solar.filter((o) => o.kind !== 'moon').forEach((obj) => {
         const mesh = createBodyMesh(obj);
         const dist = getSolarDistance(obj);
         mesh.userData.calculatedDistance = dist;
         mesh.userData.calculatedSpeed = getSolarSpeed(obj);
+        mesh.userData.currentAngle = Math.random() * Math.PI * 2; // Начальный угол до ответа NASA
 
-        if (dist > 0) mesh.position.set(dist, 0, 0);
+        if (dist > 0) {
+          mesh.position.set(dist, 0, 0);
+        }
         system.add(mesh);
         meshes.set(obj.id, mesh);
         planets[obj.id] = mesh;
@@ -136,6 +177,20 @@ function App() {
           labels.push({ label, mesh, type: obj.kind, id: obj.id });
         }
       });
+
+      // Если NASA координаты уже пришли к моменту рендера
+      if (appRef.current.livePositions) {
+        Object.entries(appRef.current.livePositions).forEach(([planetId, vec]) => {
+          const mesh = meshes.get(planetId);
+          if (mesh) {
+            const realAngle = Math.atan2(vec.z, vec.x);
+            mesh.userData.currentAngle = realAngle;
+            const r = mesh.userData.calculatedDistance || 15;
+            mesh.position.x = Math.cos(realAngle) * r;
+            mesh.position.z = Math.sin(realAngle) * r;
+          }
+        });
+      }
 
       // 2. Спутники
       solar.filter((o) => o.kind === 'moon').forEach((obj, idx) => {
@@ -167,7 +222,7 @@ function App() {
         meshes.set(obj.id, mesh);
       });
 
-      // 4. Глубокий космос и чёрные дыры
+      // 4. Глубокий космос
       objects.filter((o) => objectScale(o) === 'galaxy').forEach((obj) => {
         const mesh = createBodyMesh(obj);
         mesh.position.copy(galacticXYZ(obj));
@@ -179,7 +234,7 @@ function App() {
         }
       });
 
-      // Разделение Drag и Click (устранение сброса камеры)
+      // Разделение Drag и Click
       const raycaster = new THREE.Raycaster();
       raycaster.params.Points = { threshold: 1.2 };
       const pointer = new THREE.Vector2();
@@ -239,10 +294,9 @@ function App() {
         raf = requestAnimationFrame(animate);
         const dt = Math.min(clock.getDelta(), 0.1);
         const state = appRef.current;
-        const now = performance.now();
         const currentSpeed = state.speed ?? 1;
 
-        // Вращение планет
+        // Движение планет с текущей позиции NASA
         solar.forEach((obj) => {
           const mesh = meshes.get(obj.id);
           if (!mesh || obj.kind === 'moon') return;
@@ -250,14 +304,14 @@ function App() {
           const orbitSpd = mesh.userData.calculatedSpeed || obj.speed || 0.1;
 
           if (['planet', 'dwarf_planet', 'asteroid'].includes(obj.kind) && dist > 0) {
-            const t = now * 0.00015 * orbitSpd * currentSpeed;
-            mesh.position.x = Math.cos(t) * dist;
-            mesh.position.z = Math.sin(t) * dist * 0.995;
+            mesh.userData.currentAngle += dt * 0.08 * orbitSpd * currentSpeed;
+            mesh.position.x = Math.cos(mesh.userData.currentAngle) * dist;
+            mesh.position.z = Math.sin(mesh.userData.currentAngle) * dist * 0.995;
           }
           mesh.rotation.y += dt * (obj.id === 'sun' ? 0.05 : 0.14);
         });
 
-        // Движение лун
+        // Спутники
         moons.forEach(({ pivot, mesh, obj, parentId }) => {
           const parent = meshes.get(parentId);
           if (parent) pivot.position.copy(parent.position);
@@ -267,13 +321,14 @@ function App() {
           mesh.rotation.y += dt * 0.1;
         });
 
-        // Динамика аккреционных дисков чёрных дыр
+        // Чёрные дыры
         blackHolesList.forEach(({ disk, lensHalo, photonRing }) => {
           if (disk) disk.rotation.z += dt * 0.45 * currentSpeed;
           if (lensHalo) lensHalo.rotation.z -= dt * 0.25 * currentSpeed;
           if (photonRing) photonRing.quaternion.copy(camera.quaternion);
         });
 
+        // Метки
         labels.forEach(({ label, mesh, type, id }) => {
           const world = new THREE.Vector3();
           mesh.getWorldPosition(world);
@@ -285,7 +340,7 @@ function App() {
 
         galaxy.group.rotation.y += dt * 0.004 * currentSpeed;
 
-        // Дельта-слежение со свободным 360° обзором
+        // Дельта-слежение
         if (state.followObject && meshes.has(state.followObject.id)) {
           const m = meshes.get(state.followObject.id);
           const currentPos = new THREE.Vector3();
@@ -377,7 +432,7 @@ function App() {
     if (next !== view) setView(next);
     setSelected(obj);
     setFollow(true);
-    setPanelTab('overview'); // При выборе нового тела открываем первую вкладку
+    setPanelTab('overview');
 
     const s = appRef.current;
     const mesh = s.meshes?.get(obj.id);
@@ -435,7 +490,11 @@ function App() {
 
       <header className="topbar">
         <div className="brand"><div className="logo">✦</div><div><b>ASTROVERSE</b><small>LOCAL UNIVERSE EXPLORER</small></div></div>
-        <div className="topmeta"><span className="liveDot" /> КАТАЛОГ {objects.length} ТЕЛ <span className="sep">/</span> v0.3</div>
+        <div className="topmeta">
+          <span className="liveDot" />
+          {nasaSyncTime ? `NASA JPL: ${nasaSyncTime}` : `СИНХРОНИЗАЦИЯ С NASA...`}
+          <span className="sep">/</span> {objects.length} ТЕЛ
+        </div>
       </header>
 
       <aside className="sidebar glass">
@@ -490,8 +549,8 @@ function App() {
       <div className="scaleBadge glass">
         <span className="scaleIcon">◎</span>
         <div>
-          <small>МАСШТАБ</small>
-          <b>{view === 'solar' ? 'Кеплеровы орбиты (а.е.)' : view === 'local' ? 'Световые годы' : 'Тысячи световых лет'}</b>
+          <small>ПОЛОЖЕНИЕ ПЛАНЕТ</small>
+          <b>Живые эфемериды NASA JPL</b>
         </div>
       </div>
 
@@ -504,7 +563,7 @@ function App() {
         </div>
       )}
 
-      {/* МНОГОУРОВНЕВАЯ ЭНЦИКЛОПЕДИЧЕСКАЯ ПАНЕЛЬ С ВКЛАДКАМИ */}
+      {/* МНОГОУРОВНЕВАЯ ЭНЦИКЛОПЕДИЧЕСКАЯ ПАНЕЛЬ */}
       {selected && (
         <section className="infoPanel glass">
           <button className="close" onClick={() => {
@@ -521,7 +580,6 @@ function App() {
             {selected.latin && selected.latin !== selected.name && <div className="latin">{selected.latin}</div>}
           </div>
 
-          {/* ВКЛАДКИ */}
           <div className="panelTabs">
             <button className={panelTab === 'overview' ? 'tabBtn on' : 'tabBtn'} onClick={() => setPanelTab('overview')}>Обзор</button>
             <button className={panelTab === 'telemetry' ? 'tabBtn on' : 'tabBtn'} onClick={() => setPanelTab('telemetry')}>Телеметрия</button>
@@ -530,7 +588,6 @@ function App() {
           </div>
 
           <div className="panelBody">
-            {/* 1. ВКЛАДКА: ОБЗОР */}
             {panelTab === 'overview' && (
               <div className="tabContent">
                 <p className="mainDesc">{selected.description}</p>
@@ -549,7 +606,6 @@ function App() {
               </div>
             )}
 
-            {/* 2. ВКЛАДКА: ТЕЛЕМЕТРИЯ И ПАРАМЕТРЫ */}
             {panelTab === 'telemetry' && (
               <div className="tabContent">
                 <div className="stats">
@@ -570,7 +626,6 @@ function App() {
               </div>
             )}
 
-            {/* 3. ВКЛАДКА: МИССИИ */}
             {panelTab === 'missions' && selected.missions && (
               <div className="tabContent">
                 <div className="missionList">
@@ -584,7 +639,6 @@ function App() {
               </div>
             )}
 
-            {/* 4. ВКЛАДКА: ФАКТЫ */}
             {panelTab === 'facts' && (
               <div className="tabContent">
                 <ul className="factsList">
