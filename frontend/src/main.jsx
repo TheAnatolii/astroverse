@@ -23,16 +23,19 @@ function App() {
   const [objects, setObjects] = useState([]);
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
-  const [speed, setSpeed] = useState(1);
+
+  // УПРАВЛЕНИЕ ВРЕМЕНЕМ (TIME ENGINE)
+  const [simDate, setSimDate] = useState(new Date());
+  const [timeMultiplier, setTimeMultiplier] = useState(1); // 0 = пауза, 1 = 1 день/сек, 30 = 1 мес/сек и т.д.
+  const [isPaused, setIsPaused] = useState(false);
+
   const [view, setView] = useState('solar');
   const [follow, setFollow] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState(null);
   const [panelTab, setPanelTab] = useState('overview');
-  const [nasaSyncTime, setNasaSyncTime] = useState(null);
 
   useEffect(() => {
-    // 1. Загружаем каталог тел
     fetch(`${API}/objects`)
       .then((r) => r.json())
       .then((data) => {
@@ -45,39 +48,60 @@ function App() {
         setLoading(false);
       });
 
-    // 2. Запрашиваем живые координаты NASA JPL Horizons
     fetch(`${API}/live-ephemeris`)
       .then((r) => r.json())
       .then((res) => {
         if (res?.positions) {
           appRef.current.livePositions = res.positions;
-          setNasaSyncTime(new Date(res.timestamp).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }));
-
-          // Синхронизируем положение планет
           if (appRef.current.meshes) {
-            applyNasaLiveCoordinates(res.positions);
+            updatePlanetsToDate(new Date(), res.positions);
           }
         }
       })
-      .catch((e) => console.warn("Не удалось подтянуть живые координаты NASA:", e));
+      .catch((e) => console.warn("NASA Live Ephemeris Offline:", e));
   }, []);
 
-  function applyNasaLiveCoordinates(positions) {
+  // Перемещение планет на точные координаты выбранной даты
+  function updatePlanetsToDate(targetDate, basePositions) {
     const s = appRef.current;
     if (!s.meshes) return;
 
-    Object.entries(positions).forEach(([planetId, vec]) => {
-      const mesh = s.meshes.get(planetId);
-      if (mesh) {
-        // Вычисляем реальный угол планеты на орбите прямо сейчас
-        const realAngle = Math.atan2(vec.z, vec.x);
-        mesh.userData.currentAngle = realAngle;
-        const r = mesh.userData.calculatedDistance || 15;
-        mesh.position.x = Math.cos(realAngle) * r;
-        mesh.position.z = Math.sin(realAngle) * r;
+    // Разница во времени в днях от сегодняшней даты NASA
+    const now = new Date();
+    const diffDays = (targetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+
+    s.meshes.forEach((mesh, id) => {
+      const obj = mesh.userData;
+      if (['planet', 'dwarf_planet', 'asteroid'].includes(obj.kind) && obj.au) {
+        // Базовый угол из эфемерид NASA (или начальный угол)
+        let baseAngle = 0;
+        if (basePositions && basePositions[id]) {
+          baseAngle = Math.atan2(basePositions[id].z, basePositions[id].x);
+        } else {
+          baseAngle = mesh.userData.initialAngle || 0;
+        }
+
+        // Орбитальный период в днях по III закону Кеплера (T = 365.25 * a^1.5)
+        const periodDays = (obj.period_days) || (365.25 * Math.pow(obj.au, 1.5));
+        const angleShift = (diffDays / periodDays) * Math.PI * 2;
+        const currentAngle = baseAngle + angleShift;
+
+        mesh.userData.currentAngle = currentAngle;
+        const dist = mesh.userData.calculatedDistance || 15;
+        mesh.position.x = Math.cos(currentAngle) * dist;
+        mesh.position.z = Math.sin(currentAngle) * dist * 0.995;
       }
     });
   }
+
+  // Ручная смена даты через календарь
+  const handleDateChange = (e) => {
+    const newD = new Date(e.target.value);
+    if (!isNaN(newD.getTime())) {
+      setSimDate(newD);
+      updatePlanetsToDate(newD, appRef.current.livePositions);
+    }
+  };
 
   useEffect(() => {
     const el = mountRef.current;
@@ -149,17 +173,15 @@ function App() {
       const solar = objects.filter((o) => objectScale(o) === 'solar');
       const planets = {};
 
-      // 1. Планеты
       solar.filter((o) => o.kind !== 'moon').forEach((obj) => {
         const mesh = createBodyMesh(obj);
         const dist = getSolarDistance(obj);
         mesh.userData.calculatedDistance = dist;
         mesh.userData.calculatedSpeed = getSolarSpeed(obj);
-        mesh.userData.currentAngle = Math.random() * Math.PI * 2; // Начальный угол до ответа NASA
+        mesh.userData.initialAngle = Math.random() * Math.PI * 2;
+        mesh.userData.currentAngle = mesh.userData.initialAngle;
 
-        if (dist > 0) {
-          mesh.position.set(dist, 0, 0);
-        }
+        if (dist > 0) mesh.position.set(dist, 0, 0);
         system.add(mesh);
         meshes.set(obj.id, mesh);
         planets[obj.id] = mesh;
@@ -178,21 +200,6 @@ function App() {
         }
       });
 
-      // Если NASA координаты уже пришли к моменту рендера
-      if (appRef.current.livePositions) {
-        Object.entries(appRef.current.livePositions).forEach(([planetId, vec]) => {
-          const mesh = meshes.get(planetId);
-          if (mesh) {
-            const realAngle = Math.atan2(vec.z, vec.x);
-            mesh.userData.currentAngle = realAngle;
-            const r = mesh.userData.calculatedDistance || 15;
-            mesh.position.x = Math.cos(realAngle) * r;
-            mesh.position.z = Math.sin(realAngle) * r;
-          }
-        });
-      }
-
-      // 2. Спутники
       solar.filter((o) => o.kind === 'moon').forEach((obj, idx) => {
         const parent = planets[obj.parent];
         const mesh = createBodyMesh(obj);
@@ -214,7 +221,6 @@ function App() {
         moons.push({ pivot, mesh, obj, parentId: obj.parent });
       });
 
-      // 3. Звёзды и экзопланеты
       objects.filter((o) => objectScale(o) === 'local').forEach((obj) => {
         const mesh = createBodyMesh(obj);
         mesh.position.copy(equatorialXYZ(obj));
@@ -222,7 +228,6 @@ function App() {
         meshes.set(obj.id, mesh);
       });
 
-      // 4. Глубокий космос
       objects.filter((o) => objectScale(o) === 'galaxy').forEach((obj) => {
         const mesh = createBodyMesh(obj);
         mesh.position.copy(galacticXYZ(obj));
@@ -287,48 +292,67 @@ function App() {
         system, galaxyMarkers, labels, moons, planets, view: 'solar', sunLight, ambient, belt, kuiper,
       };
 
+      // Первичная синхронизация с NASA
+      if (appRef.current.livePositions) {
+        updatePlanetsToDate(new Date(), appRef.current.livePositions);
+      }
+
       applyViewState('solar');
 
       const clock = new THREE.Clock();
+      let accumulatedSeconds = 0;
+
       const animate = () => {
         raf = requestAnimationFrame(animate);
         const dt = Math.min(clock.getDelta(), 0.1);
         const state = appRef.current;
-        const currentSpeed = state.speed ?? 1;
 
-        // Движение планет с текущей позиции NASA
-        solar.forEach((obj) => {
-          const mesh = meshes.get(obj.id);
-          if (!mesh || obj.kind === 'moon') return;
-          const dist = mesh.userData.calculatedDistance || obj.distance;
-          const orbitSpd = mesh.userData.calculatedSpeed || obj.speed || 0.1;
+        // ДВИЖОК ВРЕМЕНИ: Расчет шага времени в днях
+        const currentMult = state.isPaused ? 0 : (state.timeMultiplier ?? 1);
+        // При 1x: 1 секунда реального времени = 1 день в космосе
+        const daysDelta = dt * currentMult;
 
-          if (['planet', 'dwarf_planet', 'asteroid'].includes(obj.kind) && dist > 0) {
-            mesh.userData.currentAngle += dt * 0.08 * orbitSpd * currentSpeed;
-            mesh.position.x = Math.cos(mesh.userData.currentAngle) * dist;
-            mesh.position.z = Math.sin(mesh.userData.currentAngle) * dist * 0.995;
+        if (daysDelta !== 0) {
+          accumulatedSeconds += dt * currentMult;
+          // Обновляем React-дату раз в полсекунды для производительности
+          if (Math.abs(accumulatedSeconds) > 0.5) {
+            setSimDate((prev) => new Date(prev.getTime() + accumulatedSeconds * 86400000));
+            accumulatedSeconds = 0;
           }
-          mesh.rotation.y += dt * (obj.id === 'sun' ? 0.05 : 0.14);
-        });
 
-        // Спутники
-        moons.forEach(({ pivot, mesh, obj, parentId }) => {
-          const parent = meshes.get(parentId);
-          if (parent) pivot.position.copy(parent.position);
-          const period = obj.period_days || 27.3;
-          const speedRatio = Math.max(0.2, Math.min(5.0, 27.3 / period));
-          pivot.rotation.y += dt * speedRatio * 0.12 * currentSpeed;
-          mesh.rotation.y += dt * 0.1;
-        });
+          // Физическое движение планет
+          solar.forEach((obj) => {
+            const mesh = meshes.get(obj.id);
+            if (!mesh || obj.kind === 'moon') return;
+            const dist = mesh.userData.calculatedDistance || obj.distance;
+            const periodDays = obj.period_days || (obj.au ? 365.25 * Math.pow(obj.au, 1.5) : 365);
+
+            if (['planet', 'dwarf_planet', 'asteroid'].includes(obj.kind) && dist > 0) {
+              const angleStep = (daysDelta / periodDays) * Math.PI * 2;
+              mesh.userData.currentAngle += angleStep;
+              mesh.position.x = Math.cos(mesh.userData.currentAngle) * dist;
+              mesh.position.z = Math.sin(mesh.userData.currentAngle) * dist * 0.995;
+            }
+            mesh.rotation.y += dt * 0.2 * (currentMult > 0 ? 1 : -1);
+          });
+
+          // Спутники
+          moons.forEach(({ pivot, mesh, obj, parentId }) => {
+            const parent = meshes.get(parentId);
+            if (parent) pivot.position.copy(parent.position);
+            const period = obj.period_days || 27.3;
+            pivot.rotation.y += (daysDelta / period) * Math.PI * 2;
+            mesh.rotation.y += dt * 0.3;
+          });
+        }
 
         // Чёрные дыры
         blackHolesList.forEach(({ disk, lensHalo, photonRing }) => {
-          if (disk) disk.rotation.z += dt * 0.45 * currentSpeed;
-          if (lensHalo) lensHalo.rotation.z -= dt * 0.25 * currentSpeed;
+          if (disk) disk.rotation.z += dt * 0.45;
+          if (lensHalo) lensHalo.rotation.z -= dt * 0.25;
           if (photonRing) photonRing.quaternion.copy(camera.quaternion);
         });
 
-        // Метки
         labels.forEach(({ label, mesh, type, id }) => {
           const world = new THREE.Vector3();
           mesh.getWorldPosition(world);
@@ -338,9 +362,9 @@ function App() {
           label.visible = state.view === 'solar' && ['planet', 'dwarf_planet'].includes(type) && !isCurrentSelected;
         });
 
-        galaxy.group.rotation.y += dt * 0.004 * currentSpeed;
+        galaxy.group.rotation.y += dt * 0.004;
 
-        // Дельта-слежение
+        // Дельта-слежение со свободным 360° обзором
         if (state.followObject && meshes.has(state.followObject.id)) {
           const m = meshes.get(state.followObject.id);
           const currentPos = new THREE.Vector3();
@@ -414,9 +438,10 @@ function App() {
   }, [view]);
 
   useEffect(() => {
-    appRef.current.speed = speed;
+    appRef.current.timeMultiplier = timeMultiplier;
+    appRef.current.isPaused = isPaused;
     appRef.current.followCamera = follow;
-  }, [speed, follow]);
+  }, [timeMultiplier, isPaused, follow]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -488,12 +513,52 @@ function App() {
         </div>
       )}
 
+      {/* ТОПБАР С МАШИНОЙ ВРЕМЕНИ */}
       <header className="topbar">
-        <div className="brand"><div className="logo">✦</div><div><b>ASTROVERSE</b><small>LOCAL UNIVERSE EXPLORER</small></div></div>
+        <div className="brand">
+          <div className="logo">✦</div>
+          <div><b>ASTROVERSE</b><small>ORBITAL TIME EXPLORER</small></div>
+        </div>
+
+        {/* ПАНЕЛЬ УПРАВЛЕНИЯ ВРЕМЕНЕМ */}
+        <div className="timeControlBar glass">
+          <button className="timeBtn" title="Сбросить на текущую дату NASA" onClick={() => {
+            const now = new Date();
+            setSimDate(now);
+            updatePlanetsToDate(now, appRef.current.livePositions);
+          }}>⟲ Сейчас</button>
+
+          <input
+            type="date"
+            className="datePicker"
+            value={simDate.toISOString().split('T')[0]}
+            onChange={handleDateChange}
+          />
+
+          <button className={`timeBtn ${isPaused ? 'active' : ''}`} onClick={() => setIsPaused(!isPaused)}>
+            {isPaused ? '▶ Пуск' : '⏸ Пауза'}
+          </button>
+
+          <div className="speedPresets">
+            {[
+              { label: '1x (1 день/с)', val: 1 },
+              { label: '10x', val: 10 },
+              { label: '30x (1 мес/с)', val: 30 },
+              { label: '365x (1 год/с)', val: 365 },
+            ].map((p) => (
+              <button
+                key={p.val}
+                className={`speedChip ${timeMultiplier === p.val && !isPaused ? 'active' : ''}`}
+                onClick={() => { setTimeMultiplier(p.val); setIsPaused(false); }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="topmeta">
-          <span className="liveDot" />
-          {nasaSyncTime ? `NASA JPL: ${nasaSyncTime}` : `СИНХРОНИЗАЦИЯ С NASA...`}
-          <span className="sep">/</span> {objects.length} ТЕЛ
+          <span className="liveDot" /> NASA JPL LIVE <span className="sep">/</span> {objects.length} ТЕЛ
         </div>
       </header>
 
@@ -523,8 +588,6 @@ function App() {
           {!loading && !displayObjects.length && <div className="muted">Ничего не найдено</div>}
         </div>
         <div className="controlBlock">
-          <div className="controlLabel"><span>Скорость времени</span><b>{speed.toFixed(1)}×</b></div>
-          <input type="range" min="0" max="8" step="0.1" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
           <label className="followToggle">
             <input
               type="checkbox"
@@ -549,21 +612,12 @@ function App() {
       <div className="scaleBadge glass">
         <span className="scaleIcon">◎</span>
         <div>
-          <small>ПОЛОЖЕНИЕ ПЛАНЕТ</small>
-          <b>Живые эфемериды NASA JPL</b>
+          <small>ДАТА СИМУЛЯЦИИ</small>
+          <b>{simDate.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</b>
         </div>
       </div>
 
-      {view === 'galaxy' && (
-        <div className="galaxyLegend glass">
-          <b>МЛЕЧНЫЙ ПУТЬ</b>
-          <span>Перемычка и балдж</span>
-          <span>4 рукава + Orion Spur</span>
-          <span>Солнце: голубая точка</span>
-        </div>
-      )}
-
-      {/* МНОГОУРОВНЕВАЯ ЭНЦИКЛОПЕДИЧЕСКАЯ ПАНЕЛЬ */}
+      {/* МНОГОУРОВНЕВАЯ ЭНЦИКЛОПЕДИЯ */}
       {selected && (
         <section className="infoPanel glass">
           <button className="close" onClick={() => {
@@ -648,7 +702,7 @@ function App() {
             )}
           </div>
 
-          {selected.source && <div className="source">База данных: {selected.source}</div>}
+          {selected.source && <div className="source">Источник: {selected.source}</div>}
         </section>
       )}
 
