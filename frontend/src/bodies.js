@@ -13,12 +13,13 @@ export function kindLabel(kind) {
     black_hole: 'чёрная дыра',
     galaxy: 'галактика',
     asteroid: 'астероид',
+    comet: 'комета',
   }[kind] || kind;
 }
 
 export function objectScale(obj) {
   if (obj.scale) return obj.scale;
-  if (['planet', 'dwarf_planet', 'moon', 'asteroid'].includes(obj.kind)) return 'solar';
+  if (['planet', 'dwarf_planet', 'moon', 'asteroid', 'comet'].includes(obj.kind)) return 'solar';
   if (obj.kind === 'star' && obj.id === 'sun') return 'solar';
   if (['star', 'exoplanet'].includes(obj.kind)) return 'local';
   return 'galaxy';
@@ -62,18 +63,39 @@ const starPointTexture = (() => {
   return new THREE.CanvasTexture(canvas);
 })();
 
+// Корона с оптическими дифракционными лучами (Diffraction Spikes)
 export function makeStarCorona(colorHex, scale = 4.5) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
   const ctx = canvas.getContext('2d');
-  const g = ctx.createRadialGradient(128, 128, 12, 128, 128, 128);
+  const cx = 128;
+  const cy = 128;
+
+  // Дифракционные 4 луча
+  const ray = ctx.createLinearGradient(0, cy, 256, cy);
+  ray.addColorStop(0, 'rgba(255,255,255,0)');
+  ray.addColorStop(0.5, 'rgba(255,255,255,0.7)');
+  ray.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = ray;
+  ctx.fillRect(0, cy - 2, 256, 4);
+
+  const rayV = ctx.createLinearGradient(cx, 0, cx, 256);
+  rayV.addColorStop(0, 'rgba(255,255,255,0)');
+  rayV.addColorStop(0.5, 'rgba(255,255,255,0.7)');
+  rayV.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = rayV;
+  ctx.fillRect(cx - 2, 0, 4, 256);
+
+  // Мягкий ореол
+  const g = ctx.createRadialGradient(cx, cy, 10, cx, cy, 120);
   g.addColorStop(0, '#ffffff');
   g.addColorStop(0.2, colorHex);
-  g.addColorStop(0.55, colorHex);
+  g.addColorStop(0.6, colorHex);
   g.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 256, 256);
+
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({
     map: tex,
@@ -170,6 +192,7 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
   return tex;
 }
 
+// Аккреционный диск с релятивистским смещением Доплера (Interstellar)
 function makeAccretionDiskTexture(innerRatio = 0.32) {
   const size = 512;
   const canvas = document.createElement('canvas');
@@ -184,7 +207,7 @@ function makeAccretionDiskTexture(innerRatio = 0.32) {
   const g = ctx.createRadialGradient(cx, cy, rIn * 0.85, cx, cy, rOut);
   g.addColorStop(0, 'rgba(0,0,0,0)');
   g.addColorStop(innerRatio * 0.92, 'rgba(0,0,0,0)');
-  g.addColorStop(innerRatio, 'rgba(255, 255, 255, 1)');
+  g.addColorStop(innerRatio, 'rgba(255, 255, 255, 1)'); // Ослепительная граница ISCO
   g.addColorStop(innerRatio + 0.08, 'rgba(255, 240, 190, 0.95)');
   g.addColorStop(innerRatio + 0.22, 'rgba(255, 160, 45, 0.85)');
   g.addColorStop(innerRatio + 0.45, 'rgba(215, 65, 15, 0.55)');
@@ -193,10 +216,11 @@ function makeAccretionDiskTexture(innerRatio = 0.32) {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
 
+  // Релятивистское усиление Доплера (левая сторона слепит яркостью, правая — в тени)
   const beam = ctx.createLinearGradient(0, cy, size, cy);
-  beam.addColorStop(0.0, 'rgba(255, 255, 255, 0.35)');
-  beam.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
-  beam.addColorStop(1.0, 'rgba(0, 0, 0, 0.45)');
+  beam.addColorStop(0.0, 'rgba(255, 255, 255, 0.45)');
+  beam.addColorStop(0.4, 'rgba(255, 255, 255, 0.1)');
+  beam.addColorStop(1.0, 'rgba(0, 0, 0, 0.55)');
   ctx.fillStyle = beam;
   ctx.globalCompositeOperation = 'overlay';
   ctx.fillRect(0, 0, size, size);
@@ -251,7 +275,7 @@ export function createBodyMesh(obj) {
   const isNebula = obj.kind === 'nebula';
   const isGalaxy = obj.kind === 'galaxy';
 
-  // 1. ЧЁРНЫЕ ДЫРЫ
+  // 1. ЧЁРНЫЕ ДЫРЫ С ПОЛЯРНЫМИ ДЖЕТАМИ И ЛИНЗОЙ
   if (isBlackHole) {
     const group = new THREE.Group();
     const horizon = new THREE.Mesh(
@@ -299,8 +323,25 @@ export function createBodyMesh(obj) {
     lensHalo.rotation.y = Math.PI / 2.3;
     group.add(lensHalo);
 
-    group.add(makeStarCorona(obj.color || '#ff8833', radius * 4.8));
+    // Полярные релятивистские джеты (для M87* и Лебедя X-1)
+    if (obj.has_jet) {
+      const jetGeo = new THREE.ConeGeometry(radius * 0.35, radius * 9.0, 32, 1, true);
+      const jetMat = new THREE.MeshBasicMaterial({
+        color: 0x55ccff,
+        transparent: true,
+        opacity: 0.65,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      const jetNorth = new THREE.Mesh(jetGeo, jetMat);
+      jetNorth.position.y = radius * 4.5;
+      const jetSouth = new THREE.Mesh(jetGeo, jetMat);
+      jetSouth.position.y = -radius * 4.5;
+      jetSouth.rotation.z = Math.PI;
+      group.add(jetNorth, jetSouth);
+    }
 
+    group.add(makeStarCorona(obj.color || '#ff8833', radius * 4.8));
     group.userData = { ...obj, isBlackHole: true, disk, lensHalo, photonRing };
     return group;
   }
@@ -308,7 +349,6 @@ export function createBodyMesh(obj) {
   // 2. ТУМАННОСТИ
   if (isNebula) {
     const group = new THREE.Group();
-
     if (obj.id === 'm57') {
       const outer = new THREE.Mesh(
         new THREE.RingGeometry(radius * 0.7, radius * 1.6, 64),
@@ -361,7 +401,6 @@ export function createBodyMesh(obj) {
   // 3. ЗВЁЗДНЫЕ СКОПЛЕНИЯ
   if (isCluster) {
     const group = new THREE.Group();
-
     if (obj.id === 'm45' || obj.id === 'pleiades') {
       const stars = [[0.15,0.05,0], [-0.35,0.25,0.1], [-0.65,-0.2,-0.1], [-0.12,0.45,0], [-0.25,-0.42,0.1], [-0.52,0.32,-0.1], [0.35,0.12,0]];
       const starPos = new Float32Array(stars.length * 3);
@@ -424,7 +463,6 @@ export function createBodyMesh(obj) {
   // 4. ГАЛАКТИКИ
   if (isGalaxy) {
     const group = new THREE.Group();
-
     if (obj.id === 'm104') {
       const core = new THREE.Mesh(
         new THREE.SphereGeometry(radius * 0.75, 32, 24),
@@ -462,13 +500,18 @@ export function createBodyMesh(obj) {
     return group;
   }
 
-  // 5. ПЛАНЕТЫ, ЛУНЫ И ЗВЁЗДЫ
-  let texName = obj.texture || obj.id;
+  // 5. ЗВЁЗДЫ И ПЛАНЕТЫ
+  let texName = obj.texture;
   if (isStar) {
-    texName = 'star_plasma';
-  } else if (obj.kind === 'exoplanet') {
-    const t = obj.temperature_k || 300;
-    texName = t > 500 ? 'exoplanet_lava' : 'exoplanet_habitable';
+    const t = obj.temperature_k || 5500;
+    texName = t > 8500 ? 'star_blue' : t > 7000 ? 'star_white' : t > 5200 ? 'star_yellow' : t > 3700 ? 'star_orange' : 'star_red';
+  } else if (!texName) {
+    if (obj.kind === 'exoplanet') {
+      const t = obj.temperature_k || 300;
+      texName = t > 500 ? 'exoplanet_lava' : 'exoplanet_habitable';
+    } else {
+      texName = 'rocky';
+    }
   }
 
   const map = getTexture(texName);
@@ -487,7 +530,7 @@ export function createBodyMesh(obj) {
   if (obj.tilt) mesh.rotation.z = (obj.tilt * Math.PI) / 180;
 
   if (isStar) {
-    mesh.add(makeStarCorona(obj.color || '#ffb74d', radius * 3.4));
+    mesh.add(makeStarCorona(obj.color || '#ffb74d', radius * 3.6));
   }
 
   if (obj.id === 'earth') {

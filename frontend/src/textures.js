@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 
-// Высоконадежные 2K карты планет и спутников
 const CDN_MAP = {
   sun: 'https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/sunmap.jpg',
   mercury: 'https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/mercurymap.jpg',
@@ -36,20 +35,57 @@ function canvasTexture(size, paint) {
   return tex;
 }
 
-// Запасные текстуры с мягким градиентом шума
-const fallbackPainters = {
-  star_plasma: (ctx, s) => {
-    const g = ctx.createRadialGradient(s / 2, s / 2, 10, s / 2, s / 2, s / 2);
-    g.addColorStop(0, '#ffffff');
-    g.addColorStop(0.3, '#ffcc44');
-    g.addColorStop(1, '#ff6600');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, s, s);
-  },
+// НАСТОЯЩИЕ ЗВЁЗДНЫЕ ФОТОСФЕРЫ: ПОТЕМНЕНИЕ К КРАЮ (LIMB DARKENING) + КИПЯЩАЯ ПЛАЗМА
+function makePhotosphere(ctx, s, centerCol, edgeCol, spotCol) {
+  const cx = s / 2;
+  const cy = s / 2;
+
+  // 1. Физическое потемнение к краю (Limb Darkening)
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
+  g.addColorStop(0, centerCol);
+  g.addColorStop(0.65, centerCol);
+  g.addColorStop(0.9, edgeCol);
+  g.addColorStop(1.0, '#110500');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+
+  // 2. Кипящие конвективные ячейки (грануляция)
+  const img = ctx.getImageData(0, 0, s, s);
+  for (let i = 0; i < s * s; i++) {
+    const noise = (Math.random() - 0.5) * 22;
+    img.data[i * 4] = Math.max(0, Math.min(255, img.data[i * 4] + noise));
+    img.data[i * 4 + 1] = Math.max(0, Math.min(255, img.data[i * 4 + 1] + noise * 0.8));
+    img.data[i * 4 + 2] = Math.max(0, Math.min(255, img.data[i * 4 + 2] + noise * 0.5));
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // 3. Звёздные пятна
+  if (spotCol) {
+    ctx.fillStyle = spotCol;
+    for (let i = 0; i < 16; i++) {
+      ctx.beginPath();
+      ctx.arc(Math.random() * s, Math.random() * s, 2 + Math.random() * 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+const painters = {
+  // O/B Голубые сверхгиганты (Ригель, Спика)
+  star_blue: (ctx, s) => makePhotosphere(ctx, s, '#ffffff', '#5599ff', 'rgba(0, 60, 180, 0.4)'),
+  // A Белые звезды (Сириус, Вега)
+  star_white: (ctx, s) => makePhotosphere(ctx, s, '#ffffff', '#c5dcff', null),
+  // F/G Желтые звезды (Солнце, Альфа Центавра)
+  star_yellow: (ctx, s) => makePhotosphere(ctx, s, '#ffffff', '#ff8800', '#772200'),
+  // K Оранжевые гиганты (Арктур, Альдебаран)
+  star_orange: (ctx, s) => makePhotosphere(ctx, s, '#ffe8aa', '#b83800', '#4a1100'),
+  // M Красные сверхгиганты (Бетельгейзе, Антарес)
+  star_red: (ctx, s) => makePhotosphere(ctx, s, '#ff7744', '#550800', '#220000'),
+
   exoplanet_habitable: (ctx, s) => {
-    ctx.fillStyle = '#10396b';
+    ctx.fillStyle = '#0e3870';
     ctx.fillRect(0, 0, s, s);
-    ctx.fillStyle = '#2d6a3e';
+    ctx.fillStyle = '#2d7a3a';
     for (let i = 0; i < 24; i++) {
       ctx.beginPath();
       ctx.arc(Math.random() * s, Math.random() * s, 10 + Math.random() * 40, 0, Math.PI * 2);
@@ -68,7 +104,6 @@ const fallbackPainters = {
       ctx.stroke();
     }
   },
-  // Реалистичный шум для скалистых лун вместо кружочков
   rocky: (ctx, s) => {
     const img = ctx.createImageData(s, s);
     for (let i = 0; i < s * s; i++) {
@@ -91,14 +126,14 @@ export function getTexture(name) {
       url,
       (t) => { t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true; },
       undefined,
-      () => console.warn(`Fallback для ${name}`)
+      () => {}
     );
     tex.colorSpace = THREE.SRGBColorSpace;
     cache.set(name, tex);
     return tex;
   }
 
-  const painter = fallbackPainters[name] || fallbackPainters.rocky;
+  const painter = painters[name] || painters.rocky;
   const fallback = canvasTexture(256, painter);
   cache.set(name, fallback);
   return fallback;
