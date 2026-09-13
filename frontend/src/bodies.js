@@ -40,6 +40,7 @@ export function getSolarSpeed(obj) {
 }
 
 export function getMoonOrbitDistance(obj, parentRadius = 1.0) {
+  if (obj.id === 'moon') return parentRadius * 3.4;
   if (obj.id === 'phobos') return parentRadius * 1.5;
   if (obj.id === 'deimos') return parentRadius * 2.3;
   if (obj.moon_distance) return parentRadius * (1.6 + obj.moon_distance * 0.45);
@@ -61,7 +62,6 @@ const starPointTexture = (() => {
   return new THREE.CanvasTexture(canvas);
 })();
 
-// Корона для звёзд
 export function makeStarCorona(colorHex, scale = 4.5) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -86,7 +86,6 @@ export function makeStarCorona(colorHex, scale = 4.5) {
   return sprite;
 }
 
-// МЯГКОЕ ОБЛАКО ТУМАННОСТИ (БЕЗ ВЫГОРАНИЯ В БЕЛЫЙ ЦВЕТ!)
 function makeNebulaCloudSprite(colorHex, scale = 5.0) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -117,7 +116,6 @@ function makeNebulaCloudSprite(colorHex, scale = 5.0) {
   return sprite;
 }
 
-// РЕАЛИСТИЧНАЯ ПРОЦЕДУРНАЯ СПИРАЛЬНАЯ ГАЛАКТИКА (БОЛЬШЕ НИКАКИХ СЕРЫХ ТАРЕЛОК!)
 function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
   const size = 512;
   const canvas = document.createElement('canvas');
@@ -127,7 +125,6 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
   const cx = size / 2;
   const cy = size / 2;
 
-  // 1. Яркое золотистое ядро балджа
   const bulge = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.22);
   bulge.addColorStop(0, 'rgba(255, 250, 230, 1.0)');
   bulge.addColorStop(0.25, 'rgba(255, 220, 160, 0.75)');
@@ -136,7 +133,6 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
   ctx.fillStyle = bulge;
   ctx.fillRect(0, 0, size, size);
 
-  // 2. Спиральные рукава
   const baseCol = new THREE.Color(colorHex);
   const armCol = `${Math.round(baseCol.r * 255)}, ${Math.round(baseCol.g * 255)}, ${Math.round(baseCol.b * 255)}`;
 
@@ -154,7 +150,6 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
       ctx.arc(x, y, 5 + Math.random() * 10, 0, Math.PI * 2);
       ctx.fill();
 
-      // Очаги звездообразования
       if (Math.random() < 0.2) {
         ctx.fillStyle = `rgba(180, 220, 255, ${alpha * 1.6})`;
         ctx.beginPath();
@@ -164,7 +159,6 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
     }
   }
 
-  // 3. Мягкое гало диска
   const halo = ctx.createRadialGradient(cx, cy, size * 0.15, cx, cy, size * 0.48);
   halo.addColorStop(0, `rgba(${armCol}, 0.18)`);
   halo.addColorStop(1, 'rgba(0,0,0,0)');
@@ -176,7 +170,6 @@ function makeSpiralGalaxyTexture(colorHex = '#99ccff') {
   return tex;
 }
 
-// Аккреционный диск
 function makeAccretionDiskTexture(innerRatio = 0.32) {
   const size = 512;
   const canvas = document.createElement('canvas');
@@ -312,11 +305,10 @@ export function createBodyMesh(obj) {
     return group;
   }
 
-  // 2. ТУМАННОСТИ (МЯГКИЙ ЦВЕТНОЙ ГАЗ БЕЗ БЕЛЫХ ВСПЫШЕК!)
+  // 2. ТУМАННОСТИ
   if (isNebula) {
     const group = new THREE.Group();
 
-    // M57 — Кольцо
     if (obj.id === 'm57') {
       const outer = new THREE.Mesh(
         new THREE.RingGeometry(radius * 0.7, radius * 1.6, 64),
@@ -333,7 +325,6 @@ export function createBodyMesh(obj) {
       return group;
     }
 
-    // M42 — Орион
     if (obj.id === 'm42') {
       const trapGeo = new THREE.BufferGeometry();
       trapGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0, radius*0.08,radius*0.05,0, -radius*0.06,radius*0.09,0, radius*0.03,-radius*0.07,0]), 3));
@@ -349,7 +340,6 @@ export function createBodyMesh(obj) {
       return group;
     }
 
-    // M1 — Крабовидная
     if (obj.id === 'm1') {
       group.add(makeNebulaCloudSprite('#0088ff', radius * 2.2));
       group.add(makeNebulaCloudSprite('#ff4500', radius * 3.2));
@@ -359,7 +349,6 @@ export function createBodyMesh(obj) {
       return group;
     }
 
-    // Обычные туманности (Лагуна и др.)
     for (let i = 0; i < 3; i++) {
       const sprite = makeNebulaCloudSprite(obj.color || '#ff8cb0', radius * (2.6 + i * 0.7));
       sprite.position.set((Math.random() - 0.5) * radius * 0.4, (Math.random() - 0.5) * radius * 0.3, 0);
@@ -369,11 +358,10 @@ export function createBodyMesh(obj) {
     return group;
   }
 
-  // 3. ЗВЁЗДНЫЕ СКОПЛЕНИЯ (ЧИСТЫЙ РОЙ ЗВЁЗД БЕЗ БЕЛОГО ПЕРЕСВЕТА В ЦЕНТРЕ)
+  // 3. ЗВЁЗДНЫЕ СКОПЛЕНИЯ
   if (isCluster) {
     const group = new THREE.Group();
 
-    // M45 — Плеяды
     if (obj.id === 'm45' || obj.id === 'pleiades') {
       const stars = [[0.15,0.05,0], [-0.35,0.25,0.1], [-0.65,-0.2,-0.1], [-0.12,0.45,0], [-0.25,-0.42,0.1], [-0.52,0.32,-0.1], [0.35,0.12,0]];
       const starPos = new Float32Array(stars.length * 3);
@@ -391,7 +379,6 @@ export function createBodyMesh(obj) {
       return group;
     }
 
-    // Шаровые скопления (M7, M10, M13)
     const count = 280;
     const pos = new Float32Array(count * 3);
     const col = new Float32Array(count * 3);
@@ -429,17 +416,15 @@ export function createBodyMesh(obj) {
       depthWrite: false,
     })));
 
-    // Очень мягкое янтарное свечение ядра (БЕЗ белого пересвета!)
     group.add(makeNebulaCloudSprite(obj.color || '#ffe0a8', radius * 1.2));
     group.userData = obj;
     return group;
   }
 
-  // 4. ГАЛАКТИКИ (РЕАЛИСТИЧНЫЙ СПИРАЛЬНЫЙ ДИСК ВМЕСТО СЕРОЙ ПЛАСТИНЫ!)
+  // 4. ГАЛАКТИКИ
   if (isGalaxy) {
     const group = new THREE.Group();
 
-    // M104 Сомбреро
     if (obj.id === 'm104') {
       const core = new THREE.Mesh(
         new THREE.SphereGeometry(radius * 0.75, 32, 24),
@@ -460,7 +445,6 @@ export function createBodyMesh(obj) {
       return group;
     }
 
-    // Все спиральные галактики (M3, Андромеда, Водоворот и др.)
     const galaxyTex = makeSpiralGalaxyTexture(obj.color || '#99ccff');
     const disk = new THREE.Mesh(
       new THREE.PlaneGeometry(radius * 5.5, radius * 5.5),
@@ -478,18 +462,13 @@ export function createBodyMesh(obj) {
     return group;
   }
 
-  // 5. ЗВЁЗДЫ И ПЛАНЕТЫ
-  let texName = obj.texture;
+  // 5. ПЛАНЕТЫ, ЛУНЫ И ЗВЁЗДЫ
+  let texName = obj.texture || obj.id;
   if (isStar) {
-    const t = obj.temperature_k || 5500;
-    texName = t > 7500 ? 'star_blue' : t > 5200 ? 'star_yellow' : t > 3700 ? 'star_orange' : 'star_red';
-  } else if (!texName) {
-    if (obj.kind === 'exoplanet') {
-      const t = obj.temperature_k || 300;
-      texName = t > 500 ? 'exoplanet_lava' : 'exoplanet_habitable';
-    } else {
-      texName = 'rocky';
-    }
+    texName = 'star_plasma';
+  } else if (obj.kind === 'exoplanet') {
+    const t = obj.temperature_k || 300;
+    texName = t > 500 ? 'exoplanet_lava' : 'exoplanet_habitable';
   }
 
   const map = getTexture(texName);
